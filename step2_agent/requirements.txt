@@ -1,0 +1,3 @@
+# Step 2: reuse Step 1 venv packages; only add OpenAI client for LLM mode
+openai>=1.40.0
+python-dotenv>=1.0.0

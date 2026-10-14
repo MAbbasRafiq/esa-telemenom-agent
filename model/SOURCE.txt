@@ -1,0 +1,9 @@
+Copied from the lab TimeEval run (Status.OK):
+
+  Labresults/2026_09_03_13_52_23/Telemanom-ESA/6d2328f384c5a4e7cf92e6b38debd5de/ESA-Mission1/84_months/1/
+
+Files:
+  model.h5, model.h5.means, model.h5.stds, hyper_params.json
+
+contract.json freezes the 87-column input order used when those means/stds
+were written. Do not reorder means/stds independently of input_channels.

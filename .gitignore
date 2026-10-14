@@ -1,0 +1,10 @@
+.venv/
+step1_rag/.venv/
+step1_rag/index/
+step3_score/.venv/
+step3_score/out/
+.env
+__pycache__/
+**/__pycache__/
+*.pyc
+.Python
