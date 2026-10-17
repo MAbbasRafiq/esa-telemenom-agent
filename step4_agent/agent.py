@@ -9,12 +9,12 @@
   cd esa-telemanom-agent/step4_agent
 
   # RAG
-  python agent.py "What is the window size?" --llm
+  python agent.py "What is the window size?"
 
   # Score + compare to labels
-  python agent.py "Score the slice and compare alarms to ground-truth labels" --llm \\
+  python agent.py "Score the slice and compare alarms to ground-truth labels" \\
     --csv ../../data/preprocessed/multivariate/ESA-Mission1-semi-supervised/84_months.test.csv \\
-    --skip-rows 31000 --max-rows 2000
+    --skip-rows 33064 --max-rows 3000
 """
 from __future__ import annotations
 
@@ -53,15 +53,21 @@ def load_dotenv() -> None:
 
 load_dotenv()
 
+# MiniLM / transformers should use PyTorch only. If they also import TensorFlow,
+# Streamlit (and some envs) can crash with a TF DType double-register error.
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("USE_TF", "0")
+
 sys.path.insert(0, str(ROOT / "step1_rag"))
 sys.path.insert(0, str(ROOT))
 from query import retrieve  # noqa: E402
-from scoring import (  # noqa: E402
-    TelemanomInferencer,
-    write_outputs,
-    compare_alarms_to_labels,
-    load_labels_aligned,
-)
+
+
+def _scoring():
+    """Import scoring only when score tools run (loads TensorFlow)."""
+    from scoring import TelemanomInferencer, write_outputs
+
+    return TelemanomInferencer, write_outputs
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_DEFAULT_MODEL = "openai/gpt-oss-20b"
@@ -79,15 +85,20 @@ def system_prompt(
 You have three tools:
 1) retrieve_knowledge — docs/facts (channels, model card, lab metrics).
 2) score_telemetry — run Telemanom on a CSV; returns a SHORT alarm summary (writes scores/alarms under step4_agent/out/).
-3) compare_alarms_to_labels — compare alarms to ground-truth is_anomaly_* columns in the same CSV slice.
-   Use AFTER scoring (or with re_score=true). Reports true/wrong/miss alarm events vs labels.
+3) compare_alarms_to_labels — compare alarms to ESA ground truth on the same CSV slice.
+   Use AFTER scoring (or with re_score=true).
+   Primary report: ESA-ADB ESAScores (alarming_precision, EW_precision/recall/F0.50, AFF_*),
+   same definitions as the lab TimeEval Telemanom evaluation.
+   Also includes a short interval true/wrong/miss note for intuition.
 
 Rules:
 - Answer ONLY from tool results. Do not invent physical root causes.
 - Keep answers short (2-6 sentences). Cite tool results.
 - For retrieve_knowledge, keep k between 1 and 8.
 - Prefer model_card for aggregate facts (87 inputs / 58 targets).
-- When the user asks what is "real" / true vs false alarm / precision vs labels, call compare_alarms_to_labels.
+- When the user asks precision / recall / true vs false / labels, call compare_alarms_to_labels.
+- Prefer quoting ESAScores (EW_*, AFF_*, alarming_precision, F_0.50) from the tool.
+  Do not invent metrics or recompute true/labels as recall.
 """
     if csv_hint:
         base += f"\nDefault telemetry CSV (has channels + is_anomaly_* labels): {csv_hint}\n"
@@ -129,7 +140,7 @@ def resolve_llm_config(model_override: str | None = None) -> tuple[str, str, str
             model_override or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini",
         )
     raise SystemExit(
-        "No LLM API key. Set GROQ_API_KEY in .env, or use --offline.\n"
+        "No LLM API key. Set GROQ_API_KEY in esa-telemanom-agent/.env\n"
         "  cp ../.env.example ../.env"
     )
 
@@ -193,6 +204,7 @@ def tool_score_telemetry(
 
     out = Path(output_dir) if output_dir else DEFAULT_OUT
     try:
+        TelemanomInferencer, write_outputs = _scoring()
         clf = TelemanomInferencer(artifacts_dir=MODEL_DIR)
         result = clf.predict(
             path,
@@ -240,6 +252,13 @@ def tool_compare_alarms_to_labels(
         if not alarms_path.is_file():
             return f"Error: alarms file missing at {alarms_path}. Run score_telemetry first."
 
+        from scoring import (
+            compare_alarms_to_labels,
+            load_labels_aligned,
+            compute_esa_scores,
+            format_esa_scores_report,
+        )
+
         alarms = pd.read_csv(alarms_path, index_col=0, parse_dates=True)
         channels = list(alarms.columns)
         labels = load_labels_aligned(
@@ -254,10 +273,22 @@ def tool_compare_alarms_to_labels(
                 f"Error: length mismatch alarms={alarms.shape[0]} labels={labels.shape[0]}. "
                 "Use the same skip_rows/max_rows as when scoring."
             )
-        summary = compare_alarms_to_labels(alarms, labels)
+
+        # Primary: ESA-ADB ESAScores (lab-comparable definitions).
+        try:
+            esa = compute_esa_scores(alarms)
+            esa_text = format_esa_scores_report(esa)
+        except Exception as e:
+            esa_text = f"ESAScores unavailable ({type(e).__name__}: {e})."
+
+        # Secondary: simple interval overlap (intuition only — not the lab metric).
+        simple = compare_alarms_to_labels(alarms, labels)
+
         return (
-            f"Compared alarms ({alarms_path}) to labels from {path} "
-            f"(skip_rows={skip_rows}, max_rows={max_rows}).\n\n{summary}"
+            f"Compared alarms ({alarms_path}) on slice "
+            f"(skip_rows={skip_rows}, max_rows={max_rows}).\n\n"
+            f"{esa_text}\n\n"
+            f"---\nSimple interval overlap (not ESAScores; for intuition only):\n{simple}"
         )
     except Exception as e:
         return f"Error during compare: {type(e).__name__}: {e}"
@@ -307,9 +338,10 @@ TOOLS_SPEC = [
         "function": {
             "name": "compare_alarms_to_labels",
             "description": (
-                "Compare model alarms to ground-truth is_anomaly_* columns in the telemetry CSV "
-                "for the same skip_rows/max_rows slice. Returns true/wrong/miss event counts "
-                "and event precision/recall on labelled channels. "
+                "Compare model alarms to ESA ground truth on the same skip_rows/max_rows slice. "
+                "Returns ESA-ADB ESAScores: alarming_precision, EW_precision, EW_recall, EW_F_0.50, "
+                "AFF_precision, AFF_recall, AFF_F_0.50 (same definitions as the lab TimeEval run), "
+                "plus a short true/wrong/miss overlap note. "
                 "Set re_score=true (default) to score first; set false to reuse existing out/alarms.csv."
             ),
             "parameters": {
@@ -354,49 +386,30 @@ def dispatch_tool(name: str, args: dict, default_k: int) -> str:
     return f"Unknown tool: {name}"
 
 
-def run_offline(
-    question: str,
-    k: int,
-    csv_path: str | None,
-    max_rows: int,
-    skip_rows: int,
-) -> None:
-    print("=== Mode: offline (no LLM) — demo tools ===\n")
-    print(f"Question: {question}\n")
-
-    print("Action: retrieve_knowledge")
-    print(tool_retrieve_knowledge(question, k=k)[:1200], "\n")
-
-    if csv_path:
-        print("Action: compare_alarms_to_labels (re_score=true)")
-        print(
-            tool_compare_alarms_to_labels(
-                csv_path, max_rows=max_rows, skip_rows=skip_rows, re_score=True
-            )
-        )
-    else:
-        print("Final answer: (no --csv; RAG only offline demo)")
-
-
-def run_llm(
+def run_llm_collect(
     question: str,
     k: int,
     model: str | None,
     csv_hint: str | None,
     default_max_rows: int = 3000,
     default_skip_rows: int = 0,
-) -> None:
+) -> dict:
+    """Run the ReAct tool loop and return structured results for the UI/CLI.
+
+    Returns:
+      provider, model, tool_steps (list of {tool, args, observation}), final_answer
+    """
     from openai import OpenAI
 
     api_key, base_url, model_name = resolve_llm_config(model)
     client = OpenAI(api_key=api_key, base_url=base_url)
-    provider = (
-        "Groq"
-        if "groq.com" in base_url
-        else "Gemini"
-        if "googleapis.com" in base_url
-        else base_url
-    )
+
+    if "groq.com" in base_url:
+        provider = "Groq"
+    elif "googleapis.com" in base_url:
+        provider = "Gemini"
+    else:
+        provider = base_url
 
     messages = [
         {
@@ -410,13 +423,9 @@ def run_llm(
         {"role": "user", "content": question},
     ]
 
-    print("=== Mode: LLM agent (3 tools) ===")
-    print(f"Provider: {provider}")
-    print(f"Model:    {model_name}")
-    if csv_hint:
-        print(f"CSV hint: {csv_hint}")
-    print(f"\nQuestion: {question}\n")
+    tool_steps = []
 
+    # Max 8 rounds so a stuck loop cannot run forever.
     for _ in range(8):
         resp = client.chat.completions.create(
             model=model_name,
@@ -427,13 +436,18 @@ def run_llm(
         msg = resp.choices[0].message
         messages.append(msg)
 
+        # If the model wants tools, run each one and feed results back.
         if msg.tool_calls:
             for call in msg.tool_calls:
                 args = json.loads(call.function.arguments or "{}")
-                print(f"Thought/Action: `{call.function.name}` {args}")
                 result = dispatch_tool(call.function.name, args, default_k=k)
-                preview = result if len(result) <= 1800 else result[:1800] + "…"
-                print("Observation:\n", preview, "\n", sep="")
+                tool_steps.append(
+                    {
+                        "tool": call.function.name,
+                        "args": args,
+                        "observation": result,
+                    }
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -443,45 +457,78 @@ def run_llm(
                 )
             continue
 
-        print("Final answer:")
-        print((msg.content or "").strip())
-        return
+        # No more tool calls → this message is the final natural-language answer.
+        return {
+            "provider": provider,
+            "model": model_name,
+            "tool_steps": tool_steps,
+            "final_answer": (msg.content or "").strip(),
+        }
 
-    print("Stopped: too many tool steps.")
+    return {
+        "provider": provider,
+        "model": model_name,
+        "tool_steps": tool_steps,
+        "final_answer": "Stopped: too many tool steps.",
+    }
+
+
+def run_llm(
+    question: str,
+    k: int,
+    model: str | None,
+    csv_hint: str | None,
+    default_max_rows: int = 3000,
+    default_skip_rows: int = 0,
+) -> None:
+    """CLI wrapper: print what run_llm_collect returns."""
+    result = run_llm_collect(
+        question,
+        k=k,
+        model=model,
+        csv_hint=csv_hint,
+        default_max_rows=default_max_rows,
+        default_skip_rows=default_skip_rows,
+    )
+
+    print("=== Mode: LLM agent (3 tools) ===")
+    print(f"Provider: {result['provider']}")
+    print(f"Model:    {result['model']}")
+    if csv_hint:
+        print(f"CSV hint: {csv_hint}")
+    print(f"\nQuestion: {question}\n")
+
+    for step in result["tool_steps"]:
+        print(f"Thought/Action: `{step['tool']}` {step['args']}")
+        obs = step["observation"]
+        preview = obs if len(obs) <= 1800 else obs[:1800] + "…"
+        print("Observation:\n", preview, "\n", sep="")
+
+    print("Final answer:")
+    print(result["final_answer"])
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Step 4: agent with retrieve + score + compare-to-labels"
+        description="Step 4: LLM agent with retrieve + score + compare-to-labels"
     )
     parser.add_argument("question", help="User question")
     parser.add_argument("-k", type=int, default=5)
-    parser.add_argument("--offline", action="store_true")
-    parser.add_argument("--llm", action="store_true")
-    parser.add_argument("--model", default=None)
+    parser.add_argument("--model", default=None, help="Optional LLM model override")
     parser.add_argument("--csv", type=str, default=None)
     parser.add_argument("--max-rows", type=int, default=3000)
     parser.add_argument("--skip-rows", type=int, default=0)
     args = parser.parse_args()
 
-    use_llm = args.llm or (not args.offline and has_llm_credentials())
-    if use_llm and not args.offline:
-        run_llm(
-            args.question,
-            k=args.k,
-            model=args.model,
-            csv_hint=args.csv,
-            default_max_rows=args.max_rows,
-            default_skip_rows=args.skip_rows,
-        )
-    else:
-        run_offline(
-            args.question,
-            k=args.k,
-            csv_path=args.csv,
-            max_rows=args.max_rows,
-            skip_rows=args.skip_rows,
-        )
+    # Always call the LLM agent (needs GROQ_API_KEY or another key in .env).
+    run_llm(
+        args.question,
+        k=args.k,
+        model=args.model,
+        csv_hint=args.csv,
+        default_max_rows=args.max_rows,
+        default_skip_rows=args.skip_rows,
+    )
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
-# Step 2 — Single reasoning agent + retrieve tool
+# Step 2 — Single LLM agent + retrieve tool
 
 Step 1 = retrieve chunks.  
-Step 2 = **agent** that calls retrieve, then writes a **short answer**.
+Step 2 = **LLM agent** that calls retrieve, then writes a **short answer**.
 
 ```text
 Question
@@ -11,64 +11,34 @@ Question
   → Short final answer
 ```
 
-Still **no** Telemanom scoring / HTML. One agent, one tool.
+Still **no** Telemanom scoring / HTML. One agent, one tool. Always uses the LLM (needs `.env` API key).
 
 ## Setup
 
-Use the **same venv** as Step 1:
-
 ```bash
-cd esa-telemanom-agent/step1_rag
-source .venv/bin/activate
-pip install -r ../step2_agent/requirements.txt   # openai + python-dotenv
-```
-
-FAISS index must already exist (`python build_index.py` in `step1_rag/`).
-
-### API key via `.env` (recommended)
-
-```bash
+conda activate esa-agent
 cd esa-telemanom-agent
 cp .env.example .env
 # edit .env → set GROQ_API_KEY=gsk_...
 ```
 
-`agent.py` loads `../.env` automatically (existing shell `export` still wins).
+FAISS index must already exist (`python build_index.py` in `step1_rag/`).
 
-## Run — offline (no API key)
-
-```bash
-cd esa-telemanom-agent/step2_agent
-source ../step1_rag/.venv/bin/activate
-
-python agent.py "What is the window size?" --offline
-```
-
-## Run — free LLM (recommended: Groq)
-
-**Why Groq:** free API key, very fast, OpenAI-compatible, tool-calling works well for this agent.  
-(Gemini also supported; Mistral/Grok not wired by default.)
-
-1. Create a free key: https://console.groq.com/keys  
-2. Put it in `.env` (see above) **or** `export GROQ_API_KEY=gsk_...`  
-3. Then:
+## Run
 
 ```bash
 cd esa-telemanom-agent/step2_agent
-source ../step1_rag/.venv/bin/activate
+conda activate esa-agent
 
-python agent.py "What is the window size?" --llm
-python agent.py "What was the lab run status?" --llm
+python agent.py "What is the window size?"
+python agent.py "What was the lab run status?"
 ```
-
-If `GROQ_API_KEY` is set (env or `.env`), `--llm` is optional (auto-detected).
 
 ### Free alternative: Gemini
 
 ```bash
 # key from https://aistudio.google.com/apikey — or set GEMINI_API_KEY in .env
-export GEMINI_API_KEY=...
-python agent.py "What is the window size?" --llm
+python agent.py "What is the window size?"
 ```
 
 ### Provider priority
@@ -77,17 +47,15 @@ python agent.py "What is the window size?" --llm
 2. `GEMINI_API_KEY` / `GOOGLE_API_KEY` → Gemini (`gemini-2.0-flash`)  
 3. `OPENAI_API_KEY` / `OPENAI_BASE_URL` → OpenAI or local Ollama  
 
-(Values can come from `.env` or shell `export`.)
-
 ## What to notice
 
 1. Agent does not read all of `knowledge/` — it **calls a tool**.
 2. Answer should stay grounded in retrieved chunks + source names.
-3. Next step (later): add a second tool for Telemanom scoring (`model/`).
+3. Next step: Step 4 adds score + compare tools (+ Streamlit UI).
 
 ## Files
 
 | File | Role |
 |------|------|
-| `agent.py` | Single agent + `retrieve_knowledge` |
+| `agent.py` | Single LLM agent + `retrieve_knowledge` |
 | `requirements.txt` | `openai` client (talks to Groq/Gemini/OpenAI) |

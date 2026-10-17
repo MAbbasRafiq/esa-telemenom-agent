@@ -1,6 +1,6 @@
-# Step 4 — Agent: RAG + score + label compare
+# Step 4 — LLM agent: RAG + score + label compare (+ Streamlit UI)
 
-One reasoning agent, **three tools**:
+One reasoning agent, **three tools** (always calls the LLM — needs `.env` API key):
 
 | Tool | Uses | When |
 |------|------|------|
@@ -10,7 +10,24 @@ One reasoning agent, **three tools**:
 
 `k` for retrieve is hard-capped at **8**.
 
-## Run
+No LangChain / LangGraph — custom tool-calling loop in `agent.py`.
+
+## Streamlit UI
+
+```bash
+conda activate esa-agent
+cd ~/ESA_ADB/esa-telemanom-agent/step4_agent
+streamlit run app.py
+```
+
+Sidebar: CSV path, `skip_rows` / `max_rows`, RAG `k`.  
+Main page: question + **Run agent** → answer + tool steps.
+
+Demo defaults: `skip_rows=295000`, `max_rows=3500` (slice where Telemanom often overlaps GT labels).
+
+**Recall note:** `true` counts *alarm* intervals that hit a label. Several alarms can hit one label, so `true/labels` can exceed 1. We report **event recall = labels_hit / labels** (`labels_hit = label_events − miss`), which is always ≤ 1.
+
+## CLI (same agent)
 
 ```bash
 conda activate esa-agent
@@ -19,42 +36,24 @@ cd esa-telemanom-agent/step4_agent
 
 ### RAG only
 ```bash
-python agent.py "What is the look-back window size?" --llm
+python agent.py "What is the look-back window size?"
 ```
 
-### Score
+### Score + compare to ground truth
 ```bash
-python agent.py "Score this slice; how many channels alarmed and top 5?" --llm \
+python agent.py "Score the slice and compare alarms to ground-truth labels. Summarize true vs wrong vs miss." \
   --csv ../../data/preprocessed/multivariate/ESA-Mission1-semi-supervised/84_months.test.csv \
-  --skip-rows 31000 --max-rows 2000
+  --skip-rows 33064 --max-rows 3000
 ```
 
-### Score + compare to ground truth (new)
-```bash
-python agent.py "Score the slice and compare alarms to ground-truth labels. Summarize true vs wrong vs miss." --llm \
-  --csv ../../data/preprocessed/multivariate/ESA-Mission1-semi-supervised/84_months.test.csv \
-  --skip-rows 31000 --max-rows 2000
-```
+## Metrics (compare tool)
 
-Reuse existing `out/alarms.csv` without re-scoring (ask the model / offline with `re_score=false` via tool args). Offline demo:
+**Primary — ESA-ADB `ESAScores`** (`scoring/esa_metrics.py`), same as lab TimeEval:
 
-```bash
-python agent.py "compare" --offline \
-  --csv ../../data/preprocessed/multivariate/ESA-Mission1-semi-supervised/84_months.test.csv \
-  --skip-rows 31000 --max-rows 2000
-```
+- `alarming_precision`
+- `EW_precision`, `EW_recall`, `EW_F_0.50`
+- `AFF_precision`, `AFF_recall`, `AFF_F_0.50`
 
-## Label compare meaning
+Needs `../data/ESA-Mission1/labels.csv` + `anomaly_types.csv`, and `pip install portion`.
 
-On each **target channel** in this slice:
-
-| Term | Meaning |
-|------|---------|
-| **true** | Alarm interval overlaps a labelled anomaly interval |
-| **wrong** | Alarm interval with no label overlap |
-| **miss** | Labelled interval with no alarm overlap |
-
-Only channels that have ≥1 label in the slice count toward precision/recall.  
-Alarms on channels with **no** label in this window are reported separately (not counted as wrong).
-
-Logic: `scoring/eval_labels.py` (same idea as the old HTML report, text-only).
+**Secondary — intuition only:** true / wrong / miss interval overlap (`scoring/eval_labels.py`).

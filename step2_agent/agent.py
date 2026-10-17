@@ -8,17 +8,12 @@ Architecture (ReAct-style):
     → Observe: chunks
     → Final short answer
 
-Modes:
-  --offline  (default if no API key)
-      Shows the same loop; writes a short answer from top chunks (no LLM).
-      Best for understanding the architecture.
+Always uses an LLM (OpenAI-compatible clients):
+  Prefer Groq (GROQ_API_KEY) — free, fast, good tool-calling.
+  Else Gemini (GEMINI_API_KEY / GOOGLE_API_KEY).
+  Else OPENAI_API_KEY / OPENAI_BASE_URL (paid OpenAI or local Ollama).
 
-  LLM mode (free-tier friendly, OpenAI-compatible clients):
-      Prefer Groq (GROQ_API_KEY) — free, fast, good tool-calling.
-      Else Gemini (GEMINI_API_KEY / GOOGLE_API_KEY).
-      Else OPENAI_API_KEY / OPENAI_BASE_URL (paid OpenAI or local Ollama).
-
-No Telemanom scoring here. That is a later step.
+No Telemanom scoring here. That is Step 3 / Step 4.
 """
 from __future__ import annotations
 
@@ -112,24 +107,13 @@ def resolve_llm_config(model_override: str | None = None) -> tuple[str, str, str
 
     raise SystemExit(
         "No LLM API key found.\n"
-        "  Free (recommended): export GROQ_API_KEY=...   # https://console.groq.com\n"
-        "  Free alternative:   export GEMINI_API_KEY=... # https://aistudio.google.com/apikey\n"
-        "  Or use:             python agent.py \"...\" --offline"
-    )
-
-
-def has_llm_credentials() -> bool:
-    return bool(
-        os.environ.get("GROQ_API_KEY")
-        or os.environ.get("GEMINI_API_KEY")
-        or os.environ.get("GOOGLE_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("OPENAI_BASE_URL")
+        "  Free (recommended): set GROQ_API_KEY in ../.env  # https://console.groq.com\n"
+        "  Free alternative:   set GEMINI_API_KEY in ../.env  # https://aistudio.google.com/apikey"
     )
 
 
 def tool_retrieve_knowledge(query: str, k: int = 5) -> str:
-    """Tool the agent can call. Returns readable chunk text for the LLM / offline mode."""
+    """Tool the agent can call. Returns readable chunk text for the LLM."""
     hits = retrieve(query, k=k)
     blocks = []
     for i, (score, chunk) in enumerate(hits, 1):
@@ -138,38 +122,6 @@ def tool_retrieve_knowledge(query: str, k: int = 5) -> str:
             f"{chunk['text']}"
         )
     return "\n\n".join(blocks) if blocks else "No chunks found."
-
-
-def run_offline(question: str, k: int) -> None:
-    """Transparent ReAct loop without an LLM — for learning."""
-    print("=== Mode: offline (no LLM API) ===\n")
-    print(f"Question: {question}\n")
-
-    print("Thought: I should retrieve project knowledge before answering.")
-    print(f"Action: retrieve_knowledge(query={question!r}, k={k})")
-    observation = tool_retrieve_knowledge(question, k=k)
-    print("Observation:")
-    print(observation)
-    print()
-
-    hits = retrieve(question, k=min(2, k))
-    if not hits:
-        answer = "I could not find relevant knowledge chunks."
-    else:
-        bits = []
-        sources = []
-        for score, chunk in hits:
-            sources.append(chunk["source"])
-            # Keep answer short: first ~400 chars of top chunks
-            bits.append(chunk["text"].strip())
-        joined = " ".join(bits)
-        if len(joined) > 500:
-            joined = joined[:500].rstrip() + "…"
-        src = ", ".join(dict.fromkeys(sources))
-        answer = f"{joined}\n\n(Sources: {src})"
-
-    print("Final answer:")
-    print(answer)
 
 
 def run_llm(question: str, k: int, model: str | None) -> None:
@@ -272,20 +224,10 @@ def run_llm(question: str, k: int, model: str | None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Step 2: single agent + retrieve_knowledge tool"
+        description="Step 2: LLM agent + retrieve_knowledge tool"
     )
     parser.add_argument("question", help="User question")
     parser.add_argument("-k", type=int, default=5, help="Chunks to retrieve")
-    parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Force offline ReAct demo (no LLM)",
-    )
-    parser.add_argument(
-        "--llm",
-        action="store_true",
-        help="Force LLM mode (GROQ_API_KEY recommended; or GEMINI_API_KEY)",
-    )
     parser.add_argument(
         "--model",
         default=None,
@@ -293,12 +235,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    use_llm = args.llm or (not args.offline and has_llm_credentials())
-
-    if use_llm and not args.offline:
-        run_llm(args.question, k=args.k, model=args.model)
-    else:
-        run_offline(args.question, k=args.k)
+    # Always call the LLM agent (needs GROQ_API_KEY or another key in .env).
+    run_llm(args.question, k=args.k, model=args.model)
 
 
 if __name__ == "__main__":

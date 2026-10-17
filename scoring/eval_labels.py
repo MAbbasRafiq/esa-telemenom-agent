@@ -130,9 +130,13 @@ def compare_alarms_to_labels(
             n_other_alarm_ch += 1
             other_alarm += int(cls["n_alarm"])
 
-    # Event-level precision/recall among labelled channels only
+    # Precision is alarm-centric: among alarm events, how many hit a label?
     prec = det_true / det_alarm if det_alarm else float("nan")
-    rec = det_true / det_label if det_label else float("nan")
+    # Recall must be label-centric (always ≤ 1): among label events, how many
+    # were hit by ≥1 alarm? Do NOT use true/labels — true counts *alarms*, so
+    # several alarms can overlap one label and true/labels can exceed 1.
+    labels_hit = det_label - det_miss
+    rec = labels_hit / det_label if det_label else float("nan")
 
     lines = [
         "Alarm vs ground-truth labels (interval overlap on this slice).",
@@ -141,9 +145,15 @@ def compare_alarms_to_labels(
         f"channels_alarm_but_no_label_here={n_other_alarm_ch}",
         f"On labelled channels: alarm_events={det_alarm}  label_events={det_label}  "
         f"true={det_true}  wrong={det_wrong}  miss={det_miss}",
-        f"event_precision(true/alarms)={prec:.3f}  event_recall(true/labels)={rec:.3f}"
+        (
+            f"event_precision(true/alarms)={prec:.3f}  "
+            f"event_recall(labels_hit/labels)={rec:.3f}  "
+            f"(labels_hit={labels_hit} = label_events - miss)"
+        )
         if det_alarm or det_label
         else "No labelled events or alarms to score on this slice.",
+        "Note: true can be > label_events when several alarm intervals overlap "
+        "the same label; that is why recall uses labels_hit, not true/labels.",
         f"alarms_on_unlabelled_channels_events={other_alarm} "
         "(not counted as wrong — no label in this window to compare).",
     ]
