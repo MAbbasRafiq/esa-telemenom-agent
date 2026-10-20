@@ -1,10 +1,8 @@
 .venv/
 .pptx_venv/
-step1_rag/.venv/
-step1_rag/index/
-step3_score/.venv/
-step3_score/out/
-step4_agent/out/
+rag/.venv/
+rag/index/
+agent/out/
 .env
 __pycache__/
 **/__pycache__/

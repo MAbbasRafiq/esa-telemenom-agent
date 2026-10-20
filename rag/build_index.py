@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Step 1 — Build a FAISS index from ../knowledge/
+"""Build a FAISS index from the knowledge/ folder.
 
-Learning flow (this script = first half of RAG):
-  1) Load knowledge files
-  2) Split into small text "chunks"
-  3) Embed each chunk (sentence-transformers → vectors)
-  4) Store vectors in FAISS + save chunk texts beside the index
+What this script does (in order):
+  1. Load text from knowledge/ (channels, anomaly types, model card, lab summary)
+  2. Split that text into small chunks
+  3. Embed each chunk with sentence-transformers (vectors)
+  4. Store the vectors in FAISS and save chunk texts next to the index
 
-No LLM answering here. No Telemanom model. Retrieval only setup.
+This does NOT call an LLM and does NOT run Telemanom.
+Run once (or again after you change knowledge/ files):
+
+  conda activate esa-agent
+  cd esa-telemanom-agent
+  python -m rag.build_index
 """
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ import numpy as np
 import pandas as pd
 from sentence_transformers import SentenceTransformer
 
+# Project root = parent of this rag/ folder
 ROOT = Path(__file__).resolve().parents[1]
 KNOWLEDGE = ROOT / "knowledge"
 INDEX_DIR = Path(__file__).resolve().parent / "index"
@@ -27,6 +33,7 @@ EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def chunks_from_channels(path: Path) -> list[dict]:
+    """Turn each row of channels.csv into one searchable text chunk."""
     df = pd.read_csv(path)
     out = []
     for _, row in df.iterrows():
@@ -44,6 +51,7 @@ def chunks_from_channels(path: Path) -> list[dict]:
 
 
 def chunks_from_anomaly_types(path: Path) -> list[dict]:
+    """Turn each row of anomaly_types.csv into one searchable text chunk."""
     df = pd.read_csv(path)
     out = []
     for _, row in df.iterrows():
@@ -58,28 +66,25 @@ def chunks_from_anomaly_types(path: Path) -> list[dict]:
 
 
 def chunks_from_lab_results(path: Path) -> list[dict]:
-    """Wide results.csv → a few readable summary chunks (skip per-channel columns)."""
+    """Turn the wide lab results CSV into a few readable summary chunks.
+
+    We skip per-channel columns (names starting with channel_) so the
+    index stays small and retrieval focuses on overall metrics.
+    """
     df = pd.read_csv(path)
     row = df.iloc[0]
-    skip = ("channel_",)
     parts = []
     for col in df.columns:
-        if any(s in col for s in skip):
+        if col.startswith("channel_"):
             continue
         val = row[col]
         if pd.isna(val):
             continue
         parts.append(f"{col}: {val}")
 
-    # One overview chunk + smaller metric-group chunks for better retrieval
-    overview = (
-        "Lab Telemanom-ESA full run summary. "
-        + " | ".join(parts[:12])
-    )
-    metrics = (
-        "Lab Telemanom-ESA evaluation metrics (non-channel). "
-        + " | ".join(parts[12:])
-    )
+    # First chunk: overview fields. Second chunk: remaining metrics.
+    overview = "Lab Telemanom-ESA full run summary. " + " | ".join(parts[:12])
+    metrics = "Lab Telemanom-ESA evaluation metrics (non-channel). " + " | ".join(parts[12:])
     return [
         {"source": path.name, "id": "lab_overview", "text": overview},
         {"source": path.name, "id": "lab_metrics", "text": metrics},
@@ -87,11 +92,12 @@ def chunks_from_lab_results(path: Path) -> list[dict]:
 
 
 def chunks_from_text(path: Path) -> list[dict]:
+    """Split a plain-text file into chunks on blank lines."""
     text = path.read_text(encoding="utf-8").strip()
-    # Small file: keep as one chunk; if long, split on blank lines
-    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
     if not blocks:
         blocks = [text]
+
     out = []
     for i, block in enumerate(blocks):
         out.append({"source": path.name, "id": f"{path.stem}_{i}", "text": block})
@@ -99,6 +105,7 @@ def chunks_from_text(path: Path) -> list[dict]:
 
 
 def load_all_chunks() -> list[dict]:
+    """Load every knowledge file and return a flat list of chunks."""
     chunks: list[dict] = []
     chunks += chunks_from_channels(KNOWLEDGE / "channels.csv")
     chunks += chunks_from_anomaly_types(KNOWLEDGE / "anomaly_types.csv")
@@ -108,16 +115,19 @@ def load_all_chunks() -> list[dict]:
 
 
 def main() -> None:
+    """Embed all chunks and write FAISS index + chunk pickle to rag/index/."""
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     chunks = load_all_chunks()
     print(f"Loaded {len(chunks)} chunks from {KNOWLEDGE}")
 
     print(f"Embedding with {EMBED_MODEL} …")
     model = SentenceTransformer(EMBED_MODEL)
-    texts = [c["text"] for c in chunks]
+    texts = [chunk["text"] for chunk in chunks]
     vectors = model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
     vectors = np.asarray(vectors, dtype=np.float32)
-    faiss.normalize_L2(vectors)  # cosine similarity via inner product
+
+    # Normalize so inner-product search equals cosine similarity.
+    faiss.normalize_L2(vectors)
 
     index = faiss.IndexFlatIP(vectors.shape[1])
     index.add(vectors)
@@ -125,6 +135,7 @@ def main() -> None:
     faiss.write_index(index, str(INDEX_DIR / "faiss.index"))
     with open(INDEX_DIR / "chunks.pkl", "wb") as f:
         pickle.dump(chunks, f)
+
     meta = {
         "embed_model": EMBED_MODEL,
         "n_chunks": len(chunks),
@@ -132,8 +143,9 @@ def main() -> None:
         "knowledge_dir": str(KNOWLEDGE),
     }
     (INDEX_DIR / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
     print(f"Wrote FAISS index → {INDEX_DIR}")
-    print("Next: python query.py \"Which channels are Target YES?\"")
+    print('Next: python -m rag.query "Which channels are Target YES?"')
 
 
 if __name__ == "__main__":

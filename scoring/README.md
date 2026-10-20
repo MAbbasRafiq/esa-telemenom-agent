@@ -1,13 +1,14 @@
-# `scoring/` — thin Telemanom infer (inside this repo)
+# `scoring/` — Telemanom inference + ESA metrics
 
-No HTML. No TimeEval. No parent `telemanom_infer` import.
+Frozen lab model lives in `../model/`. This package does not retrain.
 
 | File | Role (read in this order) |
 |------|---------------------------|
 | `windows.py` | Build LSTM input windows; apply means/stds |
 | `errors.py` | \|pred−actual\| → smooth → Telemanom threshold → alarm intervals |
-| `engine.py` | Load `../model/model.h5`, run predict, return scores/alarms |
-| `eval_labels.py` | Compare alarms vs `is_anomaly_*` labels (true/wrong/miss) |
-| `__init__.py` | Public API |
+| `engine.py` | Load `model.h5`, run predict, return scores/alarms |
+| `eval_labels.py` | Simple interval overlap vs `is_anomaly_*` (true/wrong/miss) |
+| `esa_metrics.py` | TimeEval ESAScores (EW / AFF / alarming / F0.5) |
+| `__init__.py` | Public API used by the agent tools |
 
-CLI: `../step3_score/score.py` · Agent tool: `compare_alarms_to_labels` in `step4_agent/`
+The agent calls this library via `score_telemetry` and `compare_alarms_to_labels`.

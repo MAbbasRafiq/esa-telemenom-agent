@@ -1,46 +1,68 @@
 # ESA Telemanom Agent
 
-Learning workspace: **RAG → agent → scoring → label compare → (later) multi-agent**.
+Single LLM agent over **RAG** + **Telemanom scoring** + **label compare**.  
+CLI only (no UI yet). One conda env: `esa-agent`.
 
 ## Layout
 
 ```text
 esa-telemanom-agent/
-  knowledge/              ← RAG corpus
-  model/                  ← lab weights + contract
-  scoring/                ← infer + eval_labels (no HTML)
-  step1_rag/
-  step2_agent/            ← RAG-only agent
-  step3_score/            ← scoring CLI
-  step4_agent/            ← retrieve + score + compare_to_labels
+  knowledge/     ← RAG corpus
+  model/         ← lab weights + contract
+  rag/           ← FAISS build + retrieve
+  scoring/       ← Telemanom infer + ESAScores
+  agent/         ← CLI agent (3 tools)
+    config.py    ← paths + .env
+    tools.py     ← retrieve / score / compare
+    llm.py       ← provider + tool-calling loop
+    agent.py     ← terminal entrypoint
 ```
 
-## Steps
-
-| Step | Status | Where |
-|------|--------|--------|
-| 1. RAG (FAISS) | done | `step1_rag/` |
-| 2. Single agent + retrieve | done | `step2_agent/` |
-| 3. Thin scoring | done | `scoring/` + `step3_score/` |
-| 4. Agent + RAG + score + **GT compare** + **Streamlit UI** | **done** | `step4_agent/` (`agent.py`, `app.py`) |
-| 5. Multi-agent | later | — |
-
-## One conda env: `esa-agent`
+## Setup
 
 ```bash
 conda activate esa-agent
 cd ~/ESA_ADB/esa-telemanom-agent
-pip install -r requirements.txt   # includes streamlit
+pip install -r requirements.txt
+cp .env.example .env   # set GROQ_API_KEY=...
 ```
 
-Prefer Python 3.9–3.11 for TensorFlow + lab `model.h5`.
+Prefer Python 3.9–3.11 so TensorFlow can load lab `model.h5`.
 
-## Streamlit UI
+Build the FAISS index once (or after changing `knowledge/`):
 
 ```bash
-conda activate esa-agent
-cd ~/ESA_ADB/esa-telemanom-agent/step4_agent
-streamlit run app.py
+python -m rag.build_index
 ```
 
-Single agent, 3 tools, no LangChain/LangGraph.
+## RAG only (no LLM)
+
+```bash
+python -m rag.query "What is the look-back window size?"
+```
+
+## Agent (CLI)
+
+```bash
+cd agent
+
+# Facts from knowledge/
+python agent.py "What is the window size?"
+
+# Score + compare to ground truth
+python agent.py "Score the slice and compare alarms to ground-truth labels. Summarize." \
+  --csv ../../data/preprocessed/multivariate/ESA-Mission1-semi-supervised/84_months.test.csv \
+  --skip-rows 33064 --max-rows 3000
+```
+
+Outputs (scores / alarms) go to `agent/out/`.
+
+## Tools
+
+| Tool | Uses |
+|------|------|
+| `retrieve_knowledge` | FAISS + `knowledge/` |
+| `score_telemetry` | `model/` + `scoring/` |
+| `compare_alarms_to_labels` | alarms vs `is_anomaly_*` (+ ESAScores) |
+
+No LangChain / LangGraph — custom tool-calling loop in `agent/llm.py`.

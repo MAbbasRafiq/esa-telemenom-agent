@@ -1,25 +1,22 @@
-# Single conda env "esa-agent" — install once for all steps in this folder.
+# Single conda env "esa-agent"
 #
 #   conda activate esa-agent
 #   pip install -r requirements.txt
 #
 # Prefer Python 3.9–3.11 (not 3.14) so TensorFlow can load lab model.h5.
 
-# --- Step 1 RAG ---
+# RAG
 sentence-transformers>=2.2.0
 faiss-cpu>=1.7.4
 
-# --- Step 2 agent ---
+# Agent (OpenAI-compatible client → Groq / Gemini / OpenAI / Ollama)
 openai>=1.40.0
 python-dotenv>=1.0.0
 
-# --- Step 3 scoring (lab model era) ---
+# Scoring (lab model era)
 # Keep numpy < 2: lab TensorFlow breaks on numpy 2.x (no np.bool8).
 numpy>=1.23,<2
 pandas
 more-itertools
 tensorflow>=2.5,<2.16
 portion  # ESAScores (ESA-ADB / TimeEval metrics)
-
-# --- Step 4 Streamlit UI ---
-streamlit>=1.28.0
