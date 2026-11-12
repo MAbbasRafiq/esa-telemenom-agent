@@ -3,8 +3,16 @@
 rag/.venv/
 rag/index/
 agent/out/
+agent/out/scoring_meta.json
+uploads/
 .env
 __pycache__/
 **/__pycache__/
 *.pyc
 .Python
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local

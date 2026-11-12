@@ -1,0 +1,11 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Local env (optional VITE_API_BASE override)
+.env
+.env.local
+
+# Editor / OS junk
+.DS_Store
+*.log

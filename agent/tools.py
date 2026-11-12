@@ -2,9 +2,14 @@
 
 Each tool returns a plain string (for the LLM observation).
 TOOLS_SPEC describes the same tools in OpenAI function-calling format.
+
+Stable I/O contracts are documented in docs/TOOL_CONTRACTS.md.
+Keep those contracts stable before adding multi-agent routing.
+Failures always start with the prefix "Error:".
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +26,54 @@ def _load_scoring():
     from scoring import TelemanomInferencer, write_outputs
 
     return TelemanomInferencer, write_outputs
+
+
+def _scoring_meta_path() -> Path:
+    """Small JSON file recording which CSV slice produced agent/out/alarms.csv."""
+    return DEFAULT_OUT / "scoring_meta.json"
+
+
+def _slice_descriptor(csv_path: Path, skip_rows: int, max_rows: int | None) -> dict:
+    """Identity of a scoring run (used to avoid scoring the same file twice)."""
+    return {
+        "csv_path": str(csv_path.resolve()),
+        "skip_rows": int(skip_rows),
+        "max_rows": max_rows,
+    }
+
+
+def _write_scoring_meta(csv_path: Path, skip_rows: int, max_rows: int | None) -> None:
+    """Remember which file/slice the alarms on disk belong to."""
+    DEFAULT_OUT.mkdir(parents=True, exist_ok=True)
+    meta = _slice_descriptor(csv_path, skip_rows, max_rows)
+    _scoring_meta_path().write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def _needs_fresh_score(
+    csv_path: Path,
+    skip_rows: int,
+    max_rows: int | None,
+) -> bool:
+    """Return True if Telemanom must run before compare.
+
+    False when alarms.csv already matches this exact CSV path and slice
+    (e.g. score_telemetry ran in the same agent turn just before compare).
+    """
+    alarms_path = DEFAULT_OUT / "alarms.csv"
+    meta_path = _scoring_meta_path()
+
+    if not alarms_path.is_file():
+        return True
+    if not meta_path.is_file():
+        return True
+
+    try:
+        saved = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return True
+
+    current = _slice_descriptor(csv_path, skip_rows, max_rows)
+    return saved != current
 
 
 def tool_retrieve_knowledge(query: str, k: int = 5) -> str:
@@ -90,6 +143,7 @@ def tool_score_telemetry(
             skip_rows=skip_rows,
         )
         write_outputs(result, out)
+        _write_scoring_meta(path, skip_rows=skip_rows, max_rows=max_rows)
         summary = _summarize_result(result, window_size=int(clf.contract["window_size"]))
         alarm_note = f" and {out}/alarms.csv" if result.alarms is not None else ""
         return f"Scored OK. Wrote {out}/scores.csv{alarm_note}\n\n{summary}"
@@ -101,13 +155,17 @@ def tool_compare_alarms_to_labels(
     csv_path: str,
     max_rows: int | None = 3000,
     skip_rows: int = 0,
-    re_score: bool = True,
+    re_score: bool = False,
     alarms_csv: str | None = None,
 ) -> str:
     """Compare model alarms to is_anomaly_* labels on the same CSV slice.
 
     Primary metrics come from ESA-ADB ESAScores (same as lab TimeEval).
     Secondary note is simple interval overlap (true / wrong / miss).
+
+    Scoring runs only when alarms are missing or the CSV/slice changed.
+    If score_telemetry already ran for this file in the same turn, we reuse
+    alarms.csv (no second Telemanom pass).
     """
     path = Path(csv_path)
     if not path.is_file():
@@ -116,8 +174,10 @@ def tool_compare_alarms_to_labels(
     alarms_path = Path(alarms_csv) if alarms_csv else (DEFAULT_OUT / "alarms.csv")
 
     try:
-        # Score first unless the caller asks to reuse an existing alarms file.
-        if re_score or not alarms_path.is_file():
+        # Score when needed: new file, different slice, or no alarms yet.
+        # re_score=true only forces a new run if the slice changed (not a duplicate).
+        must_score = _needs_fresh_score(path, skip_rows, max_rows)
+        if must_score:
             score_msg = tool_score_telemetry(
                 csv_path=str(path),
                 max_rows=max_rows,
@@ -127,6 +187,10 @@ def tool_compare_alarms_to_labels(
             if score_msg.startswith("Error"):
                 return score_msg
             alarms_path = DEFAULT_OUT / "alarms.csv"
+        elif re_score and not must_score:
+            # Same slice already scored — skip redundant Telemanom (LLM often
+            # calls score_telemetry then compare_alarms_to_labels).
+            pass
 
         if not alarms_path.is_file():
             return (
@@ -227,7 +291,8 @@ TOOLS_SPEC = [
                 "Returns ESA-ADB ESAScores: alarming_precision, EW_precision, EW_recall, EW_F_0.50, "
                 "AFF_precision, AFF_recall, AFF_F_0.50 (same definitions as the lab TimeEval run), "
                 "plus a short true/wrong/miss overlap note. "
-                "Set re_score=true (default) to score first; set false to reuse existing out/alarms.csv."
+                "This tool scores automatically when needed. "
+                "Do not call score_telemetry first for the same CSV — one scoring run is enough."
             ),
             "parameters": {
                 "type": "object",
@@ -237,8 +302,8 @@ TOOLS_SPEC = [
                     "skip_rows": {"type": "integer", "default": 0},
                     "re_score": {
                         "type": "boolean",
-                        "default": True,
-                        "description": "If true, run score_telemetry before compare",
+                        "default": False,
+                        "description": "Usually leave false; scoring happens when alarms are missing or the file changed",
                     },
                 },
                 "required": ["csv_path"],
@@ -269,7 +334,7 @@ def dispatch_tool(name: str, args: dict, default_k: int) -> str:
             csv_path=str(args.get("csv_path", "")),
             max_rows=args.get("max_rows", 3000),
             skip_rows=int(args.get("skip_rows", 0)),
-            re_score=bool(args.get("re_score", True)),
+            re_score=bool(args.get("re_score", False)),
         )
 
     return f"Unknown tool: {name}"

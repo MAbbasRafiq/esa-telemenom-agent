@@ -30,7 +30,7 @@ You have three tools:
 2) score_telemetry — run Telemanom on a CSV; returns a SHORT alarm summary
    (writes scores/alarms under agent/out/).
 3) compare_alarms_to_labels — compare alarms to ESA ground truth on the same CSV slice.
-   Use AFTER scoring (or with re_score=true).
+   It scores the CSV automatically when needed (writes agent/out/alarms.csv).
    Primary report: ESA-ADB ESAScores (alarming_precision, EW_precision/recall/F0.50, AFF_*),
    same definitions as the lab TimeEval Telemanom evaluation.
    Also includes a short interval true/wrong/miss note for intuition.
@@ -40,7 +40,10 @@ Rules:
 - Keep answers short (2-6 sentences). Cite tool results.
 - For retrieve_knowledge, keep k between 1 and 8.
 - Prefer model_card for aggregate facts (87 inputs / 58 targets).
-- When the user asks precision / recall / true vs false / labels, call compare_alarms_to_labels.
+- When the user asks precision / recall / true vs false / labels, call compare_alarms_to_labels ONCE.
+- Do NOT call score_telemetry and then compare_alarms_to_labels for the same CSV (duplicate work).
+  For score + compare, use compare_alarms_to_labels only.
+  Use score_telemetry alone only when the user wants scoring without label comparison.
 - Prefer quoting ESAScores (EW_*, AFF_*, alarming_precision, F_0.50) from the tool.
   Do not invent metrics or recompute true/labels as recall.
 """
