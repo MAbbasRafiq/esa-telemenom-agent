@@ -5,6 +5,7 @@ rag/index/
 agent/out/
 agent/out/scoring_meta.json
 uploads/
+data/
 .env
 __pycache__/
 **/__pycache__/

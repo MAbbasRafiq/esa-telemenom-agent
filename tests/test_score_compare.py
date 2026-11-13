@@ -96,3 +96,33 @@ def test_compare_reuses_existing_score(
     # Alarms file should be reused (same mtime), not rewritten by a second score.
     assert alarms_path.stat().st_mtime == alarms_mtime
     assert meta_path.read_text(encoding="utf-8") == meta_before
+
+
+def test_score_reuses_after_compare(
+    demo_sample_csv: Path,
+    model_pack_ok: bool,
+    clean_agent_out: Path,
+):
+    """score_telemetry after a scored compare must not re-run Telemanom."""
+    if not model_pack_ok:
+        pytest.skip("model/model.h5 missing")
+
+    compare_msg = tools.tool_compare_alarms_to_labels(
+        str(demo_sample_csv),
+        max_rows=SMOKE_MAX_ROWS,
+        skip_rows=0,
+    )
+    assert not compare_msg.startswith("Error:"), compare_msg
+
+    alarms_path = clean_agent_out / "alarms.csv"
+    assert alarms_path.is_file()
+    alarms_mtime = alarms_path.stat().st_mtime
+
+    score_msg = tools.tool_score_telemetry(
+        str(demo_sample_csv),
+        max_rows=SMOKE_MAX_ROWS,
+        skip_rows=0,
+    )
+    assert score_msg.startswith("Scored OK"), score_msg
+    assert "reused" in score_msg.lower(), score_msg
+    assert alarms_path.stat().st_mtime == alarms_mtime

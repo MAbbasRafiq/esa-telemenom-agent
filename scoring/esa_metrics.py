@@ -27,6 +27,14 @@ DEFAULT_LABELS_CSV = ESA_ADB_ROOT / "data" / "ESA-Mission1" / "labels.csv"
 DEFAULT_ANOMALY_TYPES = ESA_ADB_ROOT / "data" / "ESA-Mission1" / "anomaly_types.csv"
 
 
+class NoLabeledEventsInWindow(RuntimeError):
+    """Raised when the scored window contains no ground-truth event.
+
+    ESAScores asserts internally on an empty label set, so we stop earlier
+    and let callers explain that the slice is too short.
+    """
+
+
 def _import_esa_scores():
     """Import ESAScores without loading full timeeval (avoids docker dep)."""
     if "timeeval.metrics.ESA_ADB_metrics" in sys.modules:
@@ -125,6 +133,13 @@ def compute_esa_scores(
         labels_path, types_path, list(alarms.columns), t_min, t_max
     )
     y_pred = _alarms_to_global_pred(alarms)
+
+    if len(y_true) == 0:
+        raise NoLabeledEventsInWindow(
+            f"No ground-truth event overlaps {t_min.isoformat()} → {t_max.isoformat()} "
+            f"for the {len(alarms.columns)} scored channel(s) "
+            f"({len(alarms)} timesteps)."
+        )
 
     filters = [
         ("rare_event_and_anomaly", {"Category": ["Rare Event", "Anomaly"]}),

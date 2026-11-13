@@ -4,12 +4,19 @@
  *   - Clean message area
  *   - Composer pinned at the bottom (attach + text + send)
  */
-import { useEffect, useRef, useState } from "react";
-import { checkHealth, runAgentUpload } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  checkHealth,
+  deleteSession,
+  fetchSessionDetail,
+  fetchSessions,
+  runAgentJob,
+} from "./api";
 import ChatComposer from "./components/ChatComposer";
+import MarkdownAnswer from "./components/MarkdownAnswer";
 import Sidebar from "./components/Sidebar";
 import ToolSteps from "./components/ToolSteps";
-import type { AgentRunResponse } from "./types";
+import type { AgentRunResponse, SessionInfo } from "./types";
 
 type ChatTurn = {
   question: string;
@@ -22,8 +29,14 @@ export default function App() {
   const [question, setQuestion] = useState("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("Working…");
+  const [progressSteps, setProgressSteps] = useState<string[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** LangGraph thread — same id keeps memory across asks until New chat */
+  const [threadId, setThreadId] = useState<string | null>(null);
+  /** Past chats from the server (survive reloads and restarts) */
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -38,6 +51,14 @@ export default function App() {
     main.scrollTo({ top: main.scrollHeight, behavior: "smooth" });
   }, [turns, loading]);
 
+  const refreshSessions = useCallback(async () => {
+    setSessions(await fetchSessions());
+  }, []);
+
+  useEffect(() => {
+    void refreshSessions();
+  }, [refreshSessions]);
+
   function newChat() {
     if (loading) {
       return;
@@ -45,6 +66,47 @@ export default function App() {
     setTurns([]);
     setQuestion("");
     setUploadedFile(null);
+    setThreadId(null);
+  }
+
+  /** Reopen a past chat: replay its turns and keep writing to the same thread. */
+  async function openSession(id: string) {
+    if (loading || id === threadId) {
+      return;
+    }
+    try {
+      const detail = await fetchSessionDetail(id);
+      setTurns(
+        detail.turns.map((turn) => ({
+          question: turn.question,
+          fileName: null,
+          error: null,
+          result: turn.answer
+            ? {
+                provider: "",
+                model: "",
+                tool_steps: [],
+                final_answer: turn.answer,
+                thread_id: detail.thread_id,
+              }
+            : null,
+        })),
+      );
+      setThreadId(detail.thread_id);
+      setQuestion("");
+      setUploadedFile(null);
+    } catch {
+      // Chat was deleted or the API restarted — drop it from the list.
+      void refreshSessions();
+    }
+  }
+
+  async function removeSession(id: string) {
+    await deleteSession(id);
+    if (id === threadId) {
+      newChat();
+    }
+    void refreshSessions();
   }
 
   function selectTurn(index: number) {
@@ -64,6 +126,8 @@ export default function App() {
 
     const fileName = uploadedFile ? uploadedFile.name : null;
     setLoading(true);
+    setStatusMessage("Queued…");
+    setProgressSteps(["Queued…"]);
 
     // Show the user bubble immediately.
     setTurns((prev) => [
@@ -80,11 +144,19 @@ export default function App() {
         );
       }
 
-      const data = await runAgentUpload({
+      // Async job: API returns immediately; we poll until scoring/LLM finish.
+      const data = await runAgentJob({
         question: trimmed,
         file: uploadedFile,
         sampleId: null,
+        threadId,
+        onStatus: setStatusMessage,
+        onProgressSteps: setProgressSteps,
       });
+
+      if (data.thread_id) {
+        setThreadId(data.thread_id);
+      }
 
       setTurns((prev) => {
         const copy = [...prev];
@@ -105,6 +177,9 @@ export default function App() {
       });
     } finally {
       setLoading(false);
+      setStatusMessage("Working…");
+      setProgressSteps([]);
+      void refreshSessions();
     }
   }
 
@@ -114,11 +189,15 @@ export default function App() {
     <div className="flex h-[100dvh] overflow-hidden">
       <Sidebar
         turns={turns}
+        sessions={sessions}
+        activeThreadId={threadId}
         uploadedFileName={uploadedFile?.name ?? null}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onNewChat={newChat}
         onSelectTurn={selectTurn}
+        onSelectSession={(id) => void openSession(id)}
+        onDeleteSession={(id) => void removeSession(id)}
         onClearFile={() => setUploadedFile(null)}
         onQuickAsk={setQuestion}
       />
@@ -191,9 +270,32 @@ export default function App() {
                       <div className="max-w-[90%] space-y-3">
                         {waiting && (
                           <div className="rounded-2xl rounded-bl-md border border-[var(--color-line)] bg-white px-4 py-3 text-sm text-[var(--color-ink-muted)]">
-                            Working…
-                            <span className="mt-1 block text-xs">
-                              Anomaly checks can take a minute.
+                            <p className="font-medium text-[var(--color-ink)]">
+                              {statusMessage}
+                            </p>
+                            {progressSteps.length > 0 && (
+                              <ul className="mt-2 space-y-1 border-t border-[var(--color-line)]/70 pt-2 text-xs">
+                                {progressSteps.slice(-8).map((step, i, arr) => {
+                                  const isCurrent = i === arr.length - 1;
+                                  return (
+                                    <li
+                                      key={`${i}-${step}`}
+                                      className={
+                                        isCurrent
+                                          ? "text-[var(--color-accent-dark)]"
+                                          : "text-[var(--color-ink-muted)]"
+                                      }
+                                    >
+                                      {isCurrent ? "● " : "○ "}
+                                      {step}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                            <span className="mt-2 block text-xs">
+                              Anomaly checks can take a minute — you can keep
+                              this tab open.
                             </span>
                           </div>
                         )}
@@ -209,20 +311,50 @@ export default function App() {
 
                         {turn.result && (
                           <>
-                            <div className="rounded-2xl rounded-bl-md border border-[var(--color-line)] bg-white px-4 py-3 text-[15px] leading-relaxed text-[var(--color-ink)] shadow-sm">
-                              <p className="whitespace-pre-wrap">
-                                {turn.result.final_answer}
-                              </p>
+                            <div className="rounded-2xl rounded-bl-md border border-[var(--color-line)] bg-white px-4 py-3 shadow-sm">
+                              {turn.result.routed_to && (
+                                <span className="mb-2 inline-flex items-center rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-2 py-0.5 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-accent-dark)]">
+                                  {turn.result.routed_to} agent
+                                </span>
+                              )}
+                              <MarkdownAnswer text={turn.result.final_answer} />
+                              {turn.result.unverified_claims &&
+                                turn.result.unverified_claims.length > 0 && (
+                                  <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                                    Not found in tool output:{" "}
+                                    <span className="font-medium">
+                                      {turn.result.unverified_claims.join(", ")}
+                                    </span>
+                                    . Treat these figures as unverified.
+                                  </p>
+                                )}
                             </div>
 
-                            {turn.result.tool_steps.length > 0 && (
+                            {(turn.result.tool_steps.length > 0 ||
+                              turn.result.routed_to) && (
                               <details className="rounded-xl border border-[var(--color-line)] bg-white/80 px-4 py-3">
                                 <summary className="cursor-pointer text-xs font-medium text-[var(--color-ink-muted)]">
-                                  What the system did (
-                                  {turn.result.tool_steps.length})
+                                  What the system did
+                                  {turn.result.routed_to
+                                    ? ` · ${turn.result.routed_to} agent`
+                                    : ""}
+                                  {turn.result.tool_steps.length > 0
+                                    ? ` (${turn.result.tool_steps.length})`
+                                    : ""}
                                 </summary>
                                 <div className="mt-3">
-                                  <ToolSteps steps={turn.result.tool_steps} />
+                                  {turn.result.routed_to && (
+                                    <p className="mb-2 text-xs text-[var(--color-ink-muted)]">
+                                      Routed to{" "}
+                                      <span className="font-medium text-[var(--color-ink)]">
+                                        {turn.result.routed_to}
+                                      </span>{" "}
+                                      specialist
+                                    </p>
+                                  )}
+                                  {turn.result.tool_steps.length > 0 && (
+                                    <ToolSteps steps={turn.result.tool_steps} />
+                                  )}
                                 </div>
                               </details>
                             )}

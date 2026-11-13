@@ -18,6 +18,21 @@ MODEL_DIR = ROOT / "model"
 DEFAULT_OUT = AGENT_DIR / "out"
 MAX_RETRIEVE_K = 8
 
+# Durable runtime state (checkpoints + session CSV hints + run log)
+DATA_DIR = ROOT / "data"
+CHECKPOINT_DB = DATA_DIR / "langgraph_checkpoints.sqlite"
+SESSIONS_PATH = DATA_DIR / "sessions.json"
+RUNLOG_PATH = DATA_DIR / "runs.jsonl"
+# Rotated to runs.jsonl.1 once it grows past this.
+RUNLOG_MAX_BYTES = int(os.environ.get("ESA_RUNLOG_MAX_BYTES", 5 * 1024 * 1024))
+
+# Real-data guards (UI uploads / scoring). Override via env if needed.
+MAX_UPLOAD_BYTES = int(os.environ.get("ESA_MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
+MAX_UI_SCORE_ROWS = int(os.environ.get("ESA_MAX_UI_SCORE_ROWS", 20_000))
+MAX_TOOL_SCORE_ROWS = int(os.environ.get("ESA_MAX_TOOL_SCORE_ROWS", 50_000))
+JOB_TTL_SECONDS = int(os.environ.get("ESA_JOB_TTL_SECONDS", 3600))
+JOB_MAX_KEPT = int(os.environ.get("ESA_JOB_MAX_KEPT", 100))
+
 # Project root → "import rag", "import scoring"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

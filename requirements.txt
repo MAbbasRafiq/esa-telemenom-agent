@@ -13,6 +13,12 @@ faiss-cpu>=1.7.4
 openai>=1.40.0
 python-dotenv>=1.0.0
 
+# LangGraph single-agent graph + tool wrappers (session memory via thread_id)
+langgraph>=0.6,<0.7
+langchain-openai>=0.3,<0.4
+langchain-core>=0.3,<0.4
+langgraph-checkpoint-sqlite>=2.0,<3
+
 # HTTP API (React frontend will call this later)
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0

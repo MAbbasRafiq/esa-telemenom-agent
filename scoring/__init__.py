@@ -16,6 +16,7 @@ from .eval_labels import (  # noqa: F401
     load_labels_aligned,
 )
 from .esa_metrics import (  # noqa: F401
+    NoLabeledEventsInWindow,
     compute_esa_scores,
     format_esa_scores_report,
 )
@@ -28,4 +29,5 @@ __all__ = [
     "load_labels_aligned",
     "compute_esa_scores",
     "format_esa_scores_report",
+    "NoLabeledEventsInWindow",
 ]

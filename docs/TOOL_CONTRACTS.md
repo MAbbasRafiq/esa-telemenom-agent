@@ -24,11 +24,12 @@ Failures always start with `Error:` so callers can detect them easily.
 
 | | |
 |--|--|
-| **Purpose** | Run Telemanom on a telemetry CSV slice |
+| **Purpose** | Run Telemanom on a telemetry CSV slice; short alarm-channel summary |
 | **Inputs** | `csv_path` (required), `max_rows` (default 3000), `skip_rows` (default 0), `threshold` (default true) |
 | **Success** | Starts with `Scored OK.` — writes `agent/out/scores.csv`, `alarms.csv`, and `scoring_meta.json` |
+| **Reuse** | If `scoring_meta.json` already matches this CSV/slice and `alarms.csv` exists → **reuse** (no Telemanom). Message includes `Scored OK (reused previous run…)` |
 | **Failure** | Starts with `Error:` (missing CSV, missing model, runtime error) |
-| **Side effects** | Overwrites previous `agent/out/` artifacts for this project |
+| **Side effects** | On a fresh run, overwrites previous `agent/out/` artifacts for this project |
 
 ---
 
@@ -40,9 +41,11 @@ Failures always start with `Error:` so callers can detect them easily.
 | **Inputs** | `csv_path` (required), `max_rows`, `skip_rows`, `re_score` (default false) |
 | **Success** | Text report with ESAScores + simple interval overlap |
 | **Scoring rule** | Scores only when alarms are missing or the CSV/slice differs from `scoring_meta.json`. Same slice already scored → **reuse** (no second Telemanom pass). |
+| **Empty slice** | No labelled event in the scored window → report says ESAScores were **not computed** and precision/recall are undefined (interval overlap still shown). Never a bare `AssertionError`. |
 | **Failure** | Starts with `Error:` |
 
-**Agent usage rule:** for “score and compare”, call `compare_alarms_to_labels` once. Do not call `score_telemetry` then compare on the same file.
+**Agent usage rule:** call **one** of `score_telemetry` or `compare_alarms_to_labels` per turn — never both.  
+For “score and compare”, call `compare_alarms_to_labels` once.
 
 ---
 

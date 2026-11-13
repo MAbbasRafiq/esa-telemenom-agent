@@ -64,6 +64,12 @@ class AgentRunRequest(BaseModel):
         description="Rows to skip from the start of the CSV",
     )
 
+    # LangGraph thread id — same id keeps chat/tool memory across asks.
+    thread_id: Optional[str] = Field(
+        default=None,
+        description="Optional session thread id (returned by the API; reuse for follow-ups)",
+    )
+
 
 class ToolStep(BaseModel):
     """One tool call the agent made during the ReAct loop."""
@@ -82,10 +88,69 @@ class AgentRunResponse(BaseModel):
     """JSON the API returns after the agent finishes.
 
     Matches the dict from llm.run_agent():
-      provider, model, tool_steps, final_answer
+      provider, model, tool_steps, final_answer, thread_id
     """
 
     provider: str
     model: str
     tool_steps: list[ToolStep]
     final_answer: str
+    thread_id: Optional[str] = Field(
+        default=None,
+        description="Session thread id — send this back on the next ask",
+    )
+    routed_to: Optional[str] = Field(
+        default=None,
+        description="Multi-agent route: knowledge | score | compare",
+    )
+    unverified_claims: list[str] = Field(
+        default_factory=list,
+        description="Numbers in the answer that no tool observation supports",
+    )
+
+
+class SessionInfo(BaseModel):
+    """One past chat, for the sidebar list."""
+
+    thread_id: str
+    title: Optional[str] = None
+    csv_path: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SessionTurn(BaseModel):
+    """A question and its answer, replayed from checkpointed history."""
+
+    question: str
+    answer: str = ""
+    tools: list[str] = Field(default_factory=list)
+
+
+class SessionDetail(SessionInfo):
+    """A past chat with its messages, so the UI can reopen it."""
+
+    turns: list[SessionTurn] = Field(default_factory=list)
+
+
+class JobAccepted(BaseModel):
+    """Returned immediately when an async agent job is queued."""
+
+    job_id: str
+    thread_id: str
+    status: str = "queued"
+    status_message: str = "Queued"
+
+
+class JobStatusResponse(BaseModel):
+    """Poll response for GET /agent/jobs/{job_id}."""
+
+    job_id: str
+    thread_id: str
+    status: str  # queued | running | done | error
+    status_message: str
+    progress_steps: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    result: Optional[AgentRunResponse] = None
+    error: Optional[str] = None

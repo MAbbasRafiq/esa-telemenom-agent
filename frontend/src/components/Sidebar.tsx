@@ -1,26 +1,61 @@
 /**
- * ChatGPT-style left rail: brand, new chat, session turns, attach status, quick asks.
+ * ChatGPT-style left rail: brand, new chat, past chats, session turns,
+ * attach status, quick asks.
  */
+import type { ReactNode } from "react";
 import { SLASH_COMMANDS } from "../slashCommands";
+import type { SessionInfo } from "../types";
 
 type SidebarProps = {
   turns: { question: string }[];
+  sessions: SessionInfo[];
+  activeThreadId: string | null;
   uploadedFileName: string | null;
   open: boolean;
   onClose: () => void;
   onNewChat: () => void;
   onSelectTurn: (index: number) => void;
+  onSelectSession: (threadId: string) => void;
+  onDeleteSession: (threadId: string) => void;
   onClearFile: () => void;
   onQuickAsk: (question: string) => void;
 };
 
+/** Section heading in the rail, with an optional item count. */
+function SectionLabel({
+  children,
+  count,
+  className = "",
+}: {
+  children: ReactNode;
+  count?: number;
+  className?: string;
+}) {
+  return (
+    <p
+      className={`flex items-center gap-2 px-1 text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--color-ink)] ${className}`}
+    >
+      {children}
+      {count ? (
+        <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-ink-muted)]">
+          {count}
+        </span>
+      ) : null}
+    </p>
+  );
+}
+
 export default function Sidebar({
   turns,
+  sessions,
+  activeThreadId,
   uploadedFileName,
   open,
   onClose,
   onNewChat,
   onSelectTurn,
+  onSelectSession,
+  onDeleteSession,
   onClearFile,
   onQuickAsk,
 }: SidebarProps) {
@@ -62,15 +97,59 @@ export default function Sidebar({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-          <p className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
+          <SectionLabel count={sessions.length} className="mb-2">
+            Chats
+          </SectionLabel>
+          {sessions.length === 0 ? (
+            <p className="px-1 text-xs text-[var(--color-ink-muted)]">
+              No saved chats yet
+            </p>
+          ) : (
+            <ul className="space-y-0.5">
+              {sessions.map((session) => {
+                const isActive = session.thread_id === activeThreadId;
+                return (
+                  <li key={session.thread_id} className="group flex items-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectSession(session.thread_id);
+                        onClose();
+                      }}
+                      className={[
+                        "min-w-0 flex-1 truncate rounded-lg px-2.5 py-1.5 text-left text-[13px] transition",
+                        isActive
+                          ? "bg-white font-semibold text-[var(--color-ink)] shadow-sm"
+                          : "text-[var(--color-ink)] hover:bg-white hover:shadow-sm",
+                      ].join(" ")}
+                      title={session.title ?? session.thread_id}
+                    >
+                      {session.title || "Untitled chat"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteSession(session.thread_id)}
+                      className="shrink-0 px-1.5 text-xs text-[var(--color-ink-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-danger)]"
+                      aria-label={`Delete chat: ${session.title ?? session.thread_id}`}
+                      title="Delete chat"
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          <SectionLabel count={turns.length} className="mb-1.5 mt-5">
             This session
-          </p>
+          </SectionLabel>
           {turns.length === 0 ? (
             <p className="px-1 text-xs text-[var(--color-ink-muted)]">
               No messages yet
             </p>
           ) : (
-            <ul className="space-y-1">
+            <ul>
               {turns.map((turn, index) => (
                 <li key={index}>
                   <button
@@ -79,20 +158,21 @@ export default function Sidebar({
                       onSelectTurn(index);
                       onClose();
                     }}
-                    className="w-full truncate rounded-lg px-2.5 py-2 text-left text-[13px] text-[var(--color-ink)] transition hover:bg-white/80"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1 text-left text-[13px] text-[var(--color-ink-muted)] transition hover:bg-white hover:text-[var(--color-ink)]"
                     title={turn.question}
                   >
-                    {turn.question}
+                    <span className="shrink-0 text-[10px] text-[var(--color-accent-dark)]">
+                      ●
+                    </span>
+                    <span className="min-w-0 truncate">{turn.question}</span>
                   </button>
                 </li>
               ))}
             </ul>
           )}
 
-          <p className="mb-2 mt-5 px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
-            Quick asks
-          </p>
-          <ul className="space-y-1">
+          <SectionLabel className="mb-1.5 mt-5">Quick asks</SectionLabel>
+          <ul className="space-y-0.5">
             {SLASH_COMMANDS.map((cmd) => (
               <li key={cmd.id}>
                 <button
@@ -101,7 +181,7 @@ export default function Sidebar({
                     onQuickAsk(cmd.question);
                     onClose();
                   }}
-                  className="w-full truncate rounded-lg px-2.5 py-2 text-left text-[13px] text-[var(--color-ink-muted)] transition hover:bg-white/80 hover:text-[var(--color-ink)]"
+                  className="w-full truncate rounded-lg px-2.5 py-1.5 text-left text-[13px] text-[var(--color-ink-muted)] transition hover:bg-white hover:text-[var(--color-ink)] hover:shadow-sm"
                   title={cmd.question}
                 >
                   {cmd.label}
@@ -111,12 +191,10 @@ export default function Sidebar({
           </ul>
         </div>
 
-        <div className="shrink-0 border-t border-[var(--color-line)]/70 px-4 py-3">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
-            Attached
-          </p>
+        <div className="shrink-0 border-t border-[var(--color-line)]/70 px-3 py-3">
+          <SectionLabel>Attached</SectionLabel>
           {uploadedFileName ? (
-            <div className="mt-2 flex items-start justify-between gap-2">
+            <div className="mt-2 flex items-start justify-between gap-2 px-1">
               <p
                 className="min-w-0 truncate text-xs text-[var(--color-ink)]"
                 title={uploadedFileName}
@@ -132,7 +210,7 @@ export default function Sidebar({
               </button>
             </div>
           ) : (
-            <p className="mt-2 text-xs text-[var(--color-ink-muted)]">
+            <p className="mt-2 px-1 text-xs text-[var(--color-ink-muted)]">
               No CSV attached
             </p>
           )}

@@ -6,7 +6,8 @@ Tools (implemented in tools.py):
   2) score_telemetry
   3) compare_alarms_to_labels
 
-LLM loop lives in llm.py. Paths / .env live in config.py.
+Default runtime: LangGraph (graph.py) via llm.run_agent().
+Paths / .env live in config.py. Set ESA_AGENT_LEGACY=1 for the DIY loop.
 
 Examples (from agent/ folder, conda env esa-agent):
 

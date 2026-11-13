@@ -16,9 +16,22 @@ import pandas as pd
 
 # Import config first (sets sys.path, .env, TRANSFORMERS_NO_TF).
 import config
-from config import DEFAULT_OUT, MAX_RETRIEVE_K, MODEL_DIR
+from config import DEFAULT_OUT, MAX_RETRIEVE_K, MAX_TOOL_SCORE_ROWS, MODEL_DIR
 
 from rag.query import retrieve
+
+
+def _clamp_rows(max_rows: int | None) -> int | None:
+    """Keep tool max_rows inside a safe CPU budget."""
+    if max_rows is None:
+        return None
+    try:
+        n = int(max_rows)
+    except (TypeError, ValueError):
+        return MAX_TOOL_SCORE_ROWS
+    if n < 1:
+        return 1
+    return min(n, MAX_TOOL_SCORE_ROWS)
 
 
 def _load_scoring():
@@ -78,6 +91,9 @@ def _needs_fresh_score(
 
 def tool_retrieve_knowledge(query: str, k: int = 5) -> str:
     """Search the FAISS knowledge index and return a readable text block."""
+    from progress import report_progress
+
+    report_progress("Searching knowledge base…")
     k = max(1, min(int(k), MAX_RETRIEVE_K))
     hits = retrieve(query, k=k)
     if not hits:
@@ -117,6 +133,25 @@ def _summarize_result(result, window_size: int, top_n: int = 10) -> str:
     return "\n".join(lines)
 
 
+def _summarize_alarms_csv(alarms_path: Path, top_n: int = 10) -> str:
+    """Summarize an existing alarms.csv (reuse path — no new inference)."""
+    alarms = pd.read_csv(alarms_path, index_col=0, parse_dates=True)
+    lines = [
+        f"rows={len(alarms)}  target_channels={alarms.shape[1]}",
+        "reused_existing_alarms=true (same CSV slice — Telemanom not re-run)",
+    ]
+    counts = alarms.sum(axis=0).sort_values(ascending=False)
+    active = counts[counts > 0]
+    lines.append(f"channels_with_any_alarm={len(active)} / {len(counts)}")
+    if len(active) == 0:
+        lines.append("No alarms in this slice.")
+    else:
+        lines.append(f"Top {min(top_n, len(active))} channels by alarm timesteps:")
+        for ch, cnt in active.head(top_n).items():
+            lines.append(f"  {ch}: {int(cnt)}")
+    return "\n".join(lines)
+
+
 def tool_score_telemetry(
     csv_path: str,
     max_rows: int | None = 3000,
@@ -124,28 +159,50 @@ def tool_score_telemetry(
     threshold: bool = True,
     output_dir: str | None = None,
 ) -> str:
-    """Run Telemanom on a CSV slice; write scores/alarms; return a short summary."""
+    """Run Telemanom on a CSV slice; write scores/alarms; return a short summary.
+
+    If alarms for this exact CSV/slice already exist (scoring_meta match),
+    reuse them — do not run Telemanom again.
+    """
     path = Path(csv_path)
     if not path.is_file():
         return f"Error: CSV not found: {path}"
     if not (MODEL_DIR / "model.h5").is_file():
         return f"Error: model pack missing under {MODEL_DIR}"
 
+    max_rows = _clamp_rows(max_rows)
     out = Path(output_dir) if output_dir else DEFAULT_OUT
+    alarms_path = out / "alarms.csv"
 
     try:
+        from progress import report_progress
+
+        # Same slice already scored (e.g. compare just ran) → reuse, no 2nd infer.
+        if not _needs_fresh_score(path, skip_rows, max_rows) and alarms_path.is_file():
+            report_progress("Reusing previous Telemanom alarms for this CSV…")
+            summary = _summarize_alarms_csv(alarms_path)
+            report_progress("Scoring finished (reused)")
+            return (
+                f"Scored OK (reused previous run for this CSV slice). "
+                f"Using {alarms_path}\n\n{summary}"
+            )
+
+        report_progress("Loading Telemanom model…")
         TelemanomInferencer, write_outputs = _load_scoring()
         clf = TelemanomInferencer(artifacts_dir=MODEL_DIR)
+        report_progress("Running Telemanom inference on telemetry…")
         result = clf.predict(
             path,
             threshold=threshold,
             max_rows=max_rows,
             skip_rows=skip_rows,
         )
+        report_progress("Writing scores and alarms…")
         write_outputs(result, out)
         _write_scoring_meta(path, skip_rows=skip_rows, max_rows=max_rows)
         summary = _summarize_result(result, window_size=int(clf.contract["window_size"]))
         alarm_note = f" and {out}/alarms.csv" if result.alarms is not None else ""
+        report_progress("Scoring finished")
         return f"Scored OK. Wrote {out}/scores.csv{alarm_note}\n\n{summary}"
     except Exception as e:
         return f"Error during scoring: {type(e).__name__}: {e}"
@@ -171,13 +228,17 @@ def tool_compare_alarms_to_labels(
     if not path.is_file():
         return f"Error: CSV not found: {path}"
 
+    max_rows = _clamp_rows(max_rows)
     alarms_path = Path(alarms_csv) if alarms_csv else (DEFAULT_OUT / "alarms.csv")
 
     try:
         # Score when needed: new file, different slice, or no alarms yet.
-        # re_score=true only forces a new run if the slice changed (not a duplicate).
+        # re_score is accepted but never forces a duplicate pass on the same slice.
+        from progress import report_progress
+
         must_score = _needs_fresh_score(path, skip_rows, max_rows)
         if must_score:
+            report_progress("Compare needs a fresh score — starting Telemanom…")
             score_msg = tool_score_telemetry(
                 csv_path=str(path),
                 max_rows=max_rows,
@@ -187,10 +248,10 @@ def tool_compare_alarms_to_labels(
             if score_msg.startswith("Error"):
                 return score_msg
             alarms_path = DEFAULT_OUT / "alarms.csv"
-        elif re_score and not must_score:
-            # Same slice already scored — skip redundant Telemanom (LLM often
-            # calls score_telemetry then compare_alarms_to_labels).
-            pass
+        else:
+            # Same slice already scored — skip redundant Telemanom (the score
+            # specialist often ran on this slice in an earlier turn).
+            report_progress("Reusing previous alarms for this CSV…")
 
         if not alarms_path.is_file():
             return (
@@ -198,7 +259,9 @@ def tool_compare_alarms_to_labels(
                 "Run score_telemetry first."
             )
 
+        report_progress("Comparing alarms to ground-truth labels…")
         from scoring import (
+            NoLabeledEventsInWindow,
             compare_alarms_to_labels,
             load_labels_aligned,
             compute_esa_scores,
@@ -226,15 +289,29 @@ def tool_compare_alarms_to_labels(
         try:
             esa = compute_esa_scores(alarms)
             esa_text = format_esa_scores_report(esa)
+        except NoLabeledEventsInWindow as e:
+            esa_text = (
+                "ESAScores not computed: this slice has no labelled event.\n"
+                f"{e}\n"
+                f"Scored slice: skip_rows={skip_rows}, max_rows={max_rows}.\n"
+                "Precision/recall are undefined here — score a longer window "
+                "(larger max_rows) or a slice that covers a known event. "
+                "The interval overlap below still describes this slice."
+            )
         except Exception as e:
-            esa_text = f"ESAScores unavailable ({type(e).__name__}: {e})."
+            esa_text = (
+                f"ESAScores unavailable ({type(e).__name__}: {e}). "
+                "This is a metric-computation problem, not a model result — "
+                "do not report precision or recall for this slice."
+            )
 
         # Secondary: simple interval overlap (intuition only — not the lab metric).
         simple = compare_alarms_to_labels(alarms, labels)
 
+        origin = "fresh Telemanom run" if must_score else "reused previous alarms"
         return (
             f"Compared alarms ({alarms_path}) on slice "
-            f"(skip_rows={skip_rows}, max_rows={max_rows}).\n\n"
+            f"(skip_rows={skip_rows}, max_rows={max_rows}; {origin}).\n\n"
             f"{esa_text}\n\n"
             f"---\nSimple interval overlap (not ESAScores; for intuition only):\n{simple}"
         )
@@ -267,8 +344,10 @@ TOOLS_SPEC = [
         "function": {
             "name": "score_telemetry",
             "description": (
-                "Run Telemanom-ESA on a telemetry CSV. Returns a short alarm summary. "
-                "Writes agent/out/scores.csv and alarms.csv."
+                "Run Telemanom-ESA on a telemetry CSV. Returns which channels alarm "
+                "(short summary). No label metrics / ESAScores. "
+                "Reuses alarms if this CSV slice was already scored. "
+                "Do not also call compare_alarms_to_labels in the same turn."
             ),
             "parameters": {
                 "type": "object",
@@ -292,7 +371,8 @@ TOOLS_SPEC = [
                 "AFF_precision, AFF_recall, AFF_F_0.50 (same definitions as the lab TimeEval run), "
                 "plus a short true/wrong/miss overlap note. "
                 "This tool scores automatically when needed. "
-                "Do not call score_telemetry first for the same CSV — one scoring run is enough."
+                "Use ONLY for labels / precision / recall / known events. "
+                "Do not also call score_telemetry in the same turn."
             ),
             "parameters": {
                 "type": "object",

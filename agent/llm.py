@@ -27,25 +27,24 @@ def system_prompt(
 
 You have three tools:
 1) retrieve_knowledge — docs/facts (channels, model card, lab metrics).
-2) score_telemetry — run Telemanom on a CSV; returns a SHORT alarm summary
-   (writes scores/alarms under agent/out/).
-3) compare_alarms_to_labels — compare alarms to ESA ground truth on the same CSV slice.
-   It scores the CSV automatically when needed (writes agent/out/alarms.csv).
-   Primary report: ESA-ADB ESAScores (alarming_precision, EW_precision/recall/F0.50, AFF_*),
-   same definitions as the lab TimeEval Telemanom evaluation.
-   Also includes a short interval true/wrong/miss note for intuition.
+2) score_telemetry — run Telemanom on a CSV; returns a SHORT alarm-channel summary
+   (which channels alarm, top counts). No ESAScores / label metrics.
+3) compare_alarms_to_labels — ESA ground-truth compare + ESAScores on the same CSV.
+   Scores automatically when needed. Use ONLY when the user wants labels / precision /
+   recall / true vs false / known events / ESAScores.
+
+Tool pick (call EXACTLY ONE scoring-related tool per question — never both):
+- "score / alarms / which channels" (no labels/metrics) → score_telemetry ONLY.
+- "compare / precision / recall / labels / known events / ESAScores" → compare_alarms_to_labels ONLY.
+- "score and compare" → compare_alarms_to_labels ONLY (it scores inside if needed).
+Never call score_telemetry and compare_alarms_to_labels in the same turn.
 
 Rules:
 - Answer ONLY from tool results. Do not invent physical root causes.
-- Keep answers short (2-6 sentences). Cite tool results.
+- Keep answers short (2-6 sentences) or a small Markdown table. Do not invent metrics.
 - For retrieve_knowledge, keep k between 1 and 8.
 - Prefer model_card for aggregate facts (87 inputs / 58 targets).
-- When the user asks precision / recall / true vs false / labels, call compare_alarms_to_labels ONCE.
-- Do NOT call score_telemetry and then compare_alarms_to_labels for the same CSV (duplicate work).
-  For score + compare, use compare_alarms_to_labels only.
-  Use score_telemetry alone only when the user wants scoring without label comparison.
-- Prefer quoting ESAScores (EW_*, AFF_*, alarming_precision, F_0.50) from the tool.
-  Do not invent metrics or recompute true/labels as recall.
+- When quoting ESAScores, use only values from compare_alarms_to_labels.
 """
     if csv_hint:
         base += f"\nDefault telemetry CSV (has channels + is_anomaly_* labels): {csv_hint}\n"
@@ -107,7 +106,7 @@ def provider_name_from_base_url(base_url: str) -> str:
     return base_url
 
 
-def run_agent(
+def run_agent_legacy(
     question: str,
     k: int,
     model: str | None,
@@ -115,11 +114,7 @@ def run_agent(
     default_max_rows: int = 3000,
     default_skip_rows: int = 0,
 ) -> dict:
-    """Run the tool-calling loop and return structured results.
-
-    Returns a dict with:
-      provider, model, tool_steps, final_answer
-    """
+    """Original DIY OpenAI tool-calling loop (no LangGraph / no thread memory)."""
     from openai import OpenAI
 
     api_key, base_url, model_name = resolve_llm_config(model)
@@ -187,3 +182,52 @@ def run_agent(
         "tool_steps": tool_steps,
         "final_answer": "Stopped: too many tool steps.",
     }
+
+
+def run_agent(
+    question: str,
+    k: int,
+    model: str | None,
+    csv_hint: str | None,
+    default_max_rows: int = 3000,
+    default_skip_rows: int = 0,
+    thread_id: str | None = None,
+) -> dict:
+    """Run the agent; prefer LangGraph (session memory) when available.
+
+    Set ESA_AGENT_LEGACY=1 to force the DIY loop (no thread history).
+
+    Returns dict with: provider, model, tool_steps, final_answer [, thread_id]
+    """
+    use_legacy = os.environ.get("ESA_AGENT_LEGACY", "").strip() in ("1", "true", "yes")
+
+    if not use_legacy:
+        try:
+            from graph import run_graph_agent
+            from session import SESSION_STORE
+
+            tid = thread_id or SESSION_STORE.new_thread_id()
+            return run_graph_agent(
+                question,
+                thread_id=tid,
+                k=k,
+                model=model,
+                csv_hint=csv_hint,
+                default_max_rows=default_max_rows,
+                default_skip_rows=default_skip_rows,
+            )
+        except ImportError:
+            # LangGraph / langchain not installed — fall back.
+            pass
+
+    result = run_agent_legacy(
+        question,
+        k=k,
+        model=model,
+        csv_hint=csv_hint,
+        default_max_rows=default_max_rows,
+        default_skip_rows=default_skip_rows,
+    )
+    if thread_id:
+        result["thread_id"] = thread_id
+    return result
