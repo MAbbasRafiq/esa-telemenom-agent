@@ -1,8 +1,9 @@
 # ESA Telemanom Agent
 
-Single LLM agent over **RAG** + **Telemanom scoring** + **label compare**.  
-CLI + **FastAPI** + **React** UI. One conda env: `esa-agent` (Python).  
-Frontend needs Node.js (also installable into `esa-agent` via conda-forge).
+LangGraph **multi-agent** over **RAG** + **Telemanom scoring** + **ESAScores compare**.  
+Router → Knowledge / Score / Compare → Verifier. CLI + **FastAPI** + **React** UI.  
+One conda env: `esa-agent` (Python). Frontend needs Node.js (also installable into
+`esa-agent` via conda-forge).
 
 ## Layout
 
@@ -35,7 +36,7 @@ esa-telemanom-agent/
 
 ```bash
 conda activate esa-agent
-cd ~/ESA_ADB/esa-telemanom-agent
+cd ~/esa-telemenom-agent
 pip install -r requirements.txt
 cp .env.example .env   # set GROQ_API_KEY=...
 ```
@@ -76,7 +77,7 @@ From the **project root** (not `agent/`):
 
 ```bash
 conda activate esa-agent
-cd ~/ESA_ADB/esa-telemanom-agent
+cd ~/esa-telemenom-agent
 uvicorn api.main:app --reload --host 127.0.0.1 --port 8100
 ```
 
@@ -107,12 +108,12 @@ Needs **two terminals**: API + Vite.
 ```bash
 # Terminal 1 — FastAPI
 conda activate esa-agent
-cd ~/ESA_ADB/esa-telemanom-agent
+cd ~/esa-telemenom-agent
 uvicorn api.main:app --reload --host 127.0.0.1 --port 8100
 
 # Terminal 2 — React (Node required)
 conda activate esa-agent   # if node was installed into this env
-cd ~/ESA_ADB/esa-telemanom-agent/frontend
+cd ~/esa-telemenom-agent/frontend
 npm install
 npm run dev
 ```
@@ -208,7 +209,7 @@ pure Python. Nothing here calls the LLM.
 
 ```bash
 conda activate esa-agent
-cd ~/ESA_ADB/esa-telemanom-agent
+cd ~/esa-telemenom-agent
 pip install -r requirements.txt
 python -m rag.build_index   # if index missing
 pytest tests/ -q
